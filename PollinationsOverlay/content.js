@@ -1,176 +1,165 @@
-// --- CONFIGURATION ---
-const TRIGGER_DELAY_MS = 5000; // 5 Seconds hold to start
-const DOUBLE_CLICK_SPEED = 500; // Panic speed
-let overlayHost = null; 
+let holdTimer = null;
+let isHolding = false;
+let overlayHost = null;
 
-// --- STATE VARIABLES ---
-let triggerTimer = null;
-let abortFlag = false; 
-let lastRightClickTime = 0;
-let hasTriggeredHold = false;
+// --- NEW STATE VARIABLES ---
+let lastRightClickTime = 0; // For Panic Button
+let hasTriggeredHold = false; // To check if we held long enough
+let abortFlag = false; // To stop the solver if we panic
 
-// --- MOUSE LISTENERS ---
+// --- MOUSE CONTROLS (Middle Hold + Panic + Toggle) ---
 window.addEventListener("mousedown", (e) => {
-    // 1. MIDDLE MOUSE BUTTON (Scroll Wheel)
-    if (e.button === 1) {
-        e.preventDefault(); 
-        hasTriggeredHold = false;
-        abortFlag = false;
+  
+  // 1. MIDDLE CLICK (Button 1)
+  if (e.button === 1) { 
+    e.preventDefault();
+    isHolding = true;
+    hasTriggeredHold = false;
+    abortFlag = false;
 
-        // Start the 5-second timer
-        triggerTimer = setTimeout(() => {
-            hasTriggeredHold = true;
-            runSolver();
-        }, TRIGGER_DELAY_MS);
-    }
+    // CHANGED: 2000 -> 5000 (5 Seconds)
+    holdTimer = setTimeout(() => {
+      if (isHolding) {
+        hasTriggeredHold = true;
+        triggerSolver();
+      }
+    }, 5000); 
+  }
 
-    // 2. RIGHT MOUSE BUTTON (Panic Cancel)
-    if (e.button === 2) {
-        const now = Date.now();
-        if (now - lastRightClickTime < DOUBLE_CLICK_SPEED) {
-            // Double Right-Click -> KILL EVERYTHING
-            abortFlag = true;
-            removeOverlay();
-        }
-        lastRightClickTime = now;
+  // 2. RIGHT CLICK (Button 2) -> PANIC BUTTON
+  if (e.button === 2) {
+    const now = Date.now();
+    // Check if clicked twice within 500ms
+    if (now - lastRightClickTime < 500) {
+        abortFlag = true; // Stop any running process
+        removeOverlay();  // Kill the box instantly
     }
+    lastRightClickTime = now;
+  }
 }, true);
 
 window.addEventListener("mouseup", (e) => {
-    // Middle Mouse Release
-    if (e.button === 1) {
-        if (triggerTimer) clearTimeout(triggerTimer); 
-        
-        // If short click -> Toggle Visibility
-        if (!hasTriggeredHold) {
-            toggleVisibility();
-        }
+  if (e.button === 1) {
+    isHolding = false;
+    if (holdTimer) clearTimeout(holdTimer);
+
+    // NEW: If we didn't hold for 5s, it's a "Short Click" -> Toggle Visibility
+    if (!hasTriggeredHold) {
+        toggleVisibility();
     }
+  }
 }, true);
 
-// --- TOGGLE VISIBILITY (Stealth) ---
+// --- TOGGLE FUNCTION (Hide/Show without deleting) ---
 function toggleVisibility() {
     if (overlayHost) {
+        // Toggle display between 'block' and 'none'
         overlayHost.style.display = (overlayHost.style.display === 'none') ? 'block' : 'none';
     }
 }
 
-// --- COMMUNICATION WITH BACKGROUND SCRIPT ---
-chrome.runtime.onMessage.addListener((request) => {
-    if (abortFlag) return; // Ignore if panicked
-
-    if (request.action === "SHOW_RESULT") {
-        // AI finished! Format text and show overlay
-        const cleanText = formatText(request.text);
-        createStealthOverlay(cleanText);
-    } 
-    else if (request.action === "SHOW_ERROR") {
-        showNotification("Connection Error", "#ff4444");
-    } 
-    else if (request.action === "UPDATE_STATUS") {
-        showNotification(request.text, "#666");
-    }
-});
-
-// --- MAIN SOLVER TRIGGER ---
-function runSolver() {
-    // Visual cue that it started
-    showNotification("Syncing...", "#666");
-    
-    // Send command to Background.js to capture screen & solve
-    chrome.runtime.sendMessage({ action: "SOLVE_SCREENSHOT" });
+function triggerSolver() {
+  if (abortFlag) return;
+  
+  // Fake "Loading" toast
+  showNotification("Syncing...", "#666"); 
+  
+  // EXACT SAME LOGIC: Sends screenshot to Pollinations AI
+  chrome.runtime.sendMessage({ action: "SOLVE_SCREENSHOT" });
 }
 
-// --- MATH FORMATTER ---
+chrome.runtime.onMessage.addListener((request) => {
+  if (abortFlag) return; // Don't show if we panicked
+
+  if (request.action === "SHOW_RESULT") {
+    // NEW: Clean the text before showing it
+    const cleanText = formatText(request.text);
+    createStealthOverlay(cleanText);
+
+  } else if (request.action === "SHOW_ERROR") {
+    showNotification("Connection Timeout", "#ff4444"); 
+  } else if (request.action === "UPDATE_STATUS") {
+    showNotification("Syncing data...", "#666");
+  }
+});
+
+// --- NEW: TEXT FORMATTER (Fixes ^2, _2, /ttext artifacts) ---
 function formatText(rawText) {
     if (!rawText) return "";
     let clean = rawText;
 
-    // 1. Clean artifacts
+    // Remove AI garbage
     clean = clean.replace(/\/ttext\d+/gi, ""); 
     clean = clean.replace(/\\text\{([^}]+)\}/gi, "$1");
 
-    // 2. Superscripts (x^2 -> x²)
+    // Fix Powers (x^2 -> x²)
     clean = clean.replace(/\^(\{([^}]+)\}|(\d+))/g, (m, g1, g2) => `<sup>${g2||g1}</sup>`);
 
-    // 3. Subscripts (H_2 -> H₂)
+    // Fix Subscripts (H_2 -> H₂)
     clean = clean.replace(/_(\{([^}]+)\}|(\d+)|([a-z]))/g, (m, g1, g2, g3) => `<sub>${g2||g3||g1}</sub>`);
 
-    // 4. Symbols
+    // Fix Symbols & Lines
     clean = clean.replace(/\\pi/g, "&pi;"); 
-    clean = clean.replace(/\\theta/g, "&theta;");
-    clean = clean.replace(/\\rightarrow/g, "&rarr;");
-    
-    // 5. Formatting
     clean = clean.replace(/\n/g, "<br>");
     clean = clean.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
 
     return clean;
 }
 
-// --- UI: WHITE CONSOLE OVERLAY ---
+// --- STEALTH UI (Your Exact White Console Design) ---
 function createStealthOverlay(text) {
-    removeOverlay(); 
+  removeOverlay();
+  overlayHost = document.createElement("div");
+  overlayHost.id = "sys-" + Math.random().toString(36).substr(2, 9); 
+  Object.assign(overlayHost.style, { all: "initial", position: "fixed", zIndex: 2147483647, top: "0", left: "0" });
+  document.body.appendChild(overlayHost);
 
-    overlayHost = document.createElement("div");
-    overlayHost.id = "sys-" + Math.random().toString(36).substr(2, 9);
-    Object.assign(overlayHost.style, { all: "initial", position: "fixed", zIndex: 2147483647, top: "0", left: "0" });
-    document.body.appendChild(overlayHost);
+  const shadow = overlayHost.attachShadow({ mode: "closed" });
+  const box = document.createElement("div");
+  
+  // Your original innerHTML structure
+  box.innerHTML = `
+    <div style="font-family: 'Segoe UI', sans-serif; font-size: 11px; color: #888; border-bottom: 1px solid #ddd; margin-bottom: 5px;">
+      Console Output (Debug Mode) <span style="float:right; cursor:pointer;" id="close-x">&times;</span>
+    </div>
+    <div style="white-space: pre-wrap; color: #333; font-family: monospace; font-size: 12px; line-height: 1.4;">${text}</div>
+  `;
+  
+  Object.assign(box.style, {
+    position: "fixed", 
+    bottom: "10px", 
+    right: "10px", 
+    width: "300px", 
+    maxHeight: "200px",
+    overflowY: "auto", 
+    backgroundColor: "rgba(255, 255, 255, 0.95)", 
+    color: "#333",
+    padding: "10px", 
+    borderRadius: "4px", 
+    border: "1px solid #ccc", 
+    boxShadow: "0 2px 10px rgba(0,0,0,0.1)",
+    opacity: "0.9" 
+  });
 
-    const shadow = overlayHost.attachShadow({ mode: "closed" });
-    const box = document.createElement("div");
-
-    box.innerHTML = `
-      <div style="font-family: 'Segoe UI', sans-serif; font-size: 11px; color: #888; border-bottom: 1px solid #eee; margin-bottom: 5px; padding-bottom: 3px;">
-        Console Output (Debug Mode) <span style="float:right; cursor:pointer; font-weight:bold;" id="close-x">&times;</span>
-      </div>
-      <div style="white-space: pre-wrap; color: #333; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; line-height: 1.4;">
-        ${text}
-      </div>
-    `;
-    
-    Object.assign(box.style, {
-      position: "fixed", 
-      bottom: "20px", 
-      right: "20px", 
-      width: "320px", 
-      maxHeight: "250px",
-      overflowY: "auto", 
-      backgroundColor: "rgba(255, 255, 255, 0.96)", 
-      color: "#333",
-      padding: "12px", 
-      borderRadius: "4px", 
-      border: "1px solid #ccc", 
-      boxShadow: "0 2px 15px rgba(0,0,0,0.05)",
-      fontSize: "12px"
-    });
-
-    shadow.appendChild(box);
-    box.querySelector("#close-x").onclick = removeOverlay;
+  shadow.appendChild(box);
+  box.querySelector("#close-x").onclick = removeOverlay;
 }
 
-// --- UI: NOTIFICATION TOAST ---
 function showNotification(msg, color) {
   if (overlayHost) removeOverlay();
-  
-  const toastHost = document.createElement("div");
-  Object.assign(toastHost.style, { all: "initial", position: "fixed", zIndex: 2147483647, top: "0", left: "0" });
-  document.body.appendChild(toastHost);
-  const shadow = toastHost.attachShadow({ mode: "closed" });
-
   const toast = document.createElement("div");
   toast.innerText = msg;
   Object.assign(toast.style, {
-    position: "fixed", bottom: "20px", right: "20px", 
-    backgroundColor: "#333", color: "#fff", padding: "6px 12px", 
-    borderRadius: "4px", fontSize: "11px", fontFamily: "sans-serif",
-    boxShadow: "0 2px 5px rgba(0,0,0,0.2)"
+    position: "fixed", bottom: "10px", right: "10px", 
+    backgroundColor: "#333", color: "white", padding: "5px 10px", 
+    borderRadius: "3px", fontSize: "11px", fontFamily: "sans-serif", zIndex: 2147483647
   });
-  
-  shadow.appendChild(toast);
-  setTimeout(() => toastHost.remove(), 2500);
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2000);
 }
 
 function removeOverlay() {
-    if (overlayHost) { overlayHost.remove(); overlayHost = null; }
+  if (overlayHost) { overlayHost.remove(); overlayHost = null; }
+  const toasts = document.querySelectorAll('div[style*="z-index: 2147483647"]');
+  toasts.forEach(t => t.remove());
 }
