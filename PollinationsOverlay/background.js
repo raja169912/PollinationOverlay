@@ -1,60 +1,42 @@
-// Pollinations.ai is a free, public API.
-// We use the "openai" model which supports Vision.
+// Pollinations AI (Text Mode)
 const API_URL = "https://text.pollinations.ai/";
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "SOLVE_SCREENSHOT") {
+  if (request.action === "SOLVE_TEXT") {
     
-    // 1. Capture Screen (Quality REDUCED to 30 to prevent timeout)
-    chrome.tabs.captureVisibleTab(null, { format: "jpeg", quality: 30 }, async (dataUrl) => {
-      
-      if (chrome.runtime.lastError || !dataUrl) {
-        chrome.tabs.sendMessage(sender.tab.id, { action: "SHOW_ERROR", text: "Screenshot failed." });
-        return;
-      }
+    const rawPageText = request.text;
 
-      chrome.tabs.sendMessage(sender.tab.id, { action: "UPDATE_STATUS", text: "Analyzing Image..." });
+    // LIMIT TEXT SIZE: APIs have limits. We take the middle chunk where the question usually is,
+    // or just the first 10,000 characters to be safe.
+    const cleanText = rawPageText.substring(0, 15000); 
 
-      try {
-        // 2. Send to Pollinations.ai
-        const response = await fetch(API_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+    chrome.tabs.sendMessage(sender.tab.id, { action: "UPDATE_STATUS", text: "Analyzing Page Text..." });
+
+    fetch(API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
             messages: [
-              {
-                role: "user",
-                content: [
-                  { 
-                    type: "text", 
-                    text: "Solve this MCQ. Identify the question text. Think step-by-step. Output: FINAL ANSWER: [Option] [Value]" 
-                  },
-                  { 
-                    type: "image_url", 
-                    image_url: { url: dataUrl } 
-                  }
-                ]
-              }
+                {
+                    role: "system",
+                    content: "You are an expert exam solver. The user will provide the raw text of a webpage containing an exam question. 1. Ignore navigation menus, footers, and sidebars. 2. Find the main Question and Options. 3. Solve it. 4. Output ONLY: 'FINAL ANSWER: [Option] [Value]' followed by a 1-sentence explanation."
+                },
+                {
+                    role: "user",
+                    content: cleanText
+                }
             ],
-            model: "openai", // "openai" is the correct ID for the vision model
-            seed: Math.floor(Math.random() * 1000), // Random seed to prevent caching
+            model: "openai", // Standard text model (Fast & Free)
+            seed: Math.floor(Math.random() * 1000),
             jsonMode: false
-          })
-        });
-
-        if (!response.ok) {
-           const errText = await response.text();
-           throw new Error("API " + response.status + ": " + errText.substring(0, 50));
-        }
-
-        const answer = await response.text();
+        })
+    })
+    .then(response => response.text())
+    .then(answer => {
         chrome.tabs.sendMessage(sender.tab.id, { action: "SHOW_RESULT", text: answer });
-
-      } catch (error) {
-        console.error("Pollinations Failed:", error);
-        // Send the REAL error message to the popup
-        chrome.tabs.sendMessage(sender.tab.id, { action: "SHOW_ERROR", text: error.message });
-      }
+    })
+    .catch(error => {
+        chrome.tabs.sendMessage(sender.tab.id, { action: "SHOW_ERROR", text: "API Error: " + error.message });
     });
   }
 });

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Pollinations Vision Solver",
-  "version": "11.0",
+  "name": "Text Scraper Solver",
+  "version": "18.0",
   "permissions": ["activeTab", "scripting"],
   "host_permissions": [
     "https://text.pollinations.ai/*",
